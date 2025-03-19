@@ -7,12 +7,14 @@ use std::{
     thread::{Builder, JoinHandle},
     time::{Duration, Instant, SystemTime},
 };
-
+use std::net::SocketAddr;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use jito_block_engine::block_engine::BlockEnginePackets;
 use jito_relayer::relayer::RelayerPacketBatches;
 use solana_core::banking_trace::BankingPacketBatch;
 use solana_metrics::datapoint_info;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::error::TrySendError;
 
 pub const BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY: usize = 5_000;
@@ -27,15 +29,40 @@ pub fn start_forward_and_delay_thread(
     num_threads: u64,
     disable_mempool: bool,
     exit: &Arc<AtomicBool>,
+    hook_udp_target: SocketAddr
 ) -> Vec<JoinHandle<()>> {
     const SLEEP_DURATION: Duration = Duration::from_millis(5);
     let packet_delay = Duration::from_millis(packet_delay_ms as u64);
+    
+    let (hook_tx_sender, mut hook_tx_receiver) = channel::<BankingPacketBatch>(1000);
+
+
+
+    // spawn a hook task and forget about it
+    tokio::spawn(async move {
+        let hook_socket = UdpSocket::bind("0.0.0.0:0").await.expect("no empty ports left on localhost");
+
+        while let Some(banking_packet_batch) = hook_tx_receiver.recv().await {
+            let batches = banking_packet_batch.0.clone();
+
+            for batch in batches {
+                for packet in batch.iter() {
+                    if let Some(serialized_tx) = packet.data(..) {
+                        // versioned transaction ready to send
+                        hook_socket.send_to(&serialized_tx, &hook_udp_target).await.expect("error sending packet to hook");
+                    }
+                }
+            }
+        }
+    });
+    
 
     (0..num_threads)
         .map(|thread_id| {
             let verified_receiver = verified_receiver.clone();
             let delay_packet_sender = delay_packet_sender.clone();
             let block_engine_sender = block_engine_sender.clone();
+            let hook_tx_sender = hook_tx_sender.clone();
 
             let exit = exit.clone();
             Builder::new()
@@ -75,6 +102,23 @@ pub fn start_forward_and_delay_thread(
                                     .sum::<u64>();
                                 forwarder_metrics.num_batches_received += 1;
                                 forwarder_metrics.num_packets_received += num_packets;
+                                
+                                // send with hook here
+                                match hook_tx_sender.try_send(banking_packet_batch.clone()) {
+                                    Ok(_) => {
+                                        forwarder_metrics.num_hook_packets_forwarded += num_packets;
+                                    }
+                                    Err(TrySendError::Closed(_)) => {
+                                        panic!(
+                                            "error sending packet batch to hook"
+                                        );
+                                    }
+                                    Err(TrySendError::Full(_)) => {
+                                        // block engine most likely not connected
+                                        forwarder_metrics.num_hook_packets_dropped += num_packets;
+                                        forwarder_metrics.num_hook_sender_full += 1;
+                                    }
+                                }
 
                                 // try_send because the block engine receiver only drains when it's connected
                                 // and we don't want to OOM on packet_receiver
@@ -150,6 +194,10 @@ struct ForwarderMetrics {
     pub num_be_packets_forwarded: u64,
     pub num_be_packets_dropped: u64,
     pub num_be_sender_full: u64,
+    
+    pub num_hook_packets_forwarded: u64,
+    pub num_hook_packets_dropped: u64,
+    pub num_hook_sender_full: u64,
 
     pub num_relayer_packets_forwarded: u64,
 
@@ -174,6 +222,9 @@ impl ForwarderMetrics {
             num_be_packets_forwarded: 0,
             num_be_packets_dropped: 0,
             num_be_sender_full: 0,
+            num_hook_packets_forwarded: 0,
+            num_hook_packets_dropped: 0,
+            num_hook_sender_full: 0,
             num_relayer_packets_forwarded: 0,
             buffered_packet_batches_max_len: 0,
             buffered_packet_batches_capacity,
@@ -221,6 +272,9 @@ impl ForwarderMetrics {
             ),
             ("num_be_packets_dropped", self.num_be_packets_dropped, i64),
             ("num_be_sender_full", self.num_be_sender_full, i64),
+            ("num_hook_packets_forwarded", self.num_hook_packets_forwarded, i64),
+            ("num_hook_packets_dropped", self.num_hook_packets_dropped, i64),
+            ("num_hook_sender_full", self.num_hook_sender_full, i64),
             // Relayer -> validator metrics
             (
                 "num_relayer_packets_forwarded",

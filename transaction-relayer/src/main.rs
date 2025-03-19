@@ -77,6 +77,9 @@ struct Args {
     #[arg(long, env, default_value_t = 11_228)]
     tpu_quic_port: u16,
 
+    #[arg(long, env)]
+    hook_udp_relay_target: SocketAddr,
+
     /// Number of tpu quic servers to spawn.
     #[arg(long, env, default_value_t = 1)]
     num_tpu_quic_servers: u16,
@@ -477,6 +480,7 @@ fn main() {
         1,
         args.disable_mempool,
         &exit,
+        args.hook_udp_relay_target
     );
 
     let is_connected_to_block_engine = Arc::new(AtomicBool::new(false));

@@ -29,40 +29,18 @@ pub fn start_forward_and_delay_thread(
     num_threads: u64,
     disable_mempool: bool,
     exit: &Arc<AtomicBool>,
-    hook_udp_target: SocketAddr
+    hook_packet_sender: tokio::sync::mpsc::Sender<BankingPacketBatch>
 ) -> Vec<JoinHandle<()>> {
     const SLEEP_DURATION: Duration = Duration::from_millis(5);
     let packet_delay = Duration::from_millis(packet_delay_ms as u64);
-    
-    let (hook_tx_sender, mut hook_tx_receiver) = channel::<BankingPacketBatch>(1000);
 
-
-
-    // spawn a hook task and forget about it
-    tokio::spawn(async move {
-        let hook_socket = UdpSocket::bind("0.0.0.0:0").await.expect("no empty ports left on localhost");
-
-        while let Some(banking_packet_batch) = hook_tx_receiver.recv().await {
-            let batches = banking_packet_batch.0.clone();
-
-            for batch in batches {
-                for packet in batch.iter() {
-                    if let Some(serialized_tx) = packet.data(..) {
-                        // versioned transaction ready to send
-                        hook_socket.send_to(&serialized_tx, &hook_udp_target).await.expect("error sending packet to hook");
-                    }
-                }
-            }
-        }
-    });
-    
 
     (0..num_threads)
         .map(|thread_id| {
             let verified_receiver = verified_receiver.clone();
             let delay_packet_sender = delay_packet_sender.clone();
             let block_engine_sender = block_engine_sender.clone();
-            let hook_tx_sender = hook_tx_sender.clone();
+            let hook_tx_sender = hook_packet_sender.clone();
 
             let exit = exit.clone();
             Builder::new()

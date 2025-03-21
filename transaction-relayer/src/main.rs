@@ -49,6 +49,7 @@ use solana_sdk::{
 };
 use tikv_jemallocator::Jemalloc;
 use tokio::{runtime::Builder, signal, sync::mpsc::channel};
+use tokio::net::UdpSocket;
 use tonic::transport::Server;
 
 // no-op change to test ci
@@ -472,6 +473,9 @@ fn main() {
     let (block_engine_sender, block_engine_receiver) =
         channel(jito_transaction_relayer::forwarder::BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY);
 
+    let (hook_packet_sender, mut hook_packet_receiver) =
+        channel(jito_transaction_relayer::forwarder::BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY);
+
     let forward_and_delay_threads = start_forward_and_delay_thread(
         verified_receiver,
         delay_packet_sender,
@@ -480,7 +484,7 @@ fn main() {
         1,
         args.disable_mempool,
         &exit,
-        args.hook_udp_relay_target
+        hook_packet_sender
     );
 
     let is_connected_to_block_engine = Arc::new(AtomicBool::new(false));
@@ -577,6 +581,24 @@ fn main() {
             MAX_BUFFERED_REQUESTS,
             REQUESTS_PER_SECOND,
         )
+    });
+
+    // hook broadcast task
+    rt.spawn(async move {
+        let hook_socket = UdpSocket::bind("0.0.0.0:0").await.expect("no empty ports left on localhost");
+
+        while let Some(banking_packet_batch) = hook_packet_receiver.recv().await {
+            let batches = banking_packet_batch.0.clone();
+
+            for batch in batches {
+                for packet in batch.iter() {
+                    if let Some(serialized_tx) = packet.data(..) {
+                        // versioned transaction ready to send
+                        hook_socket.send_to(&serialized_tx, &args.hook_udp_relay_target).await.expect("error sending packet to hook");
+                    }
+                }
+            }
+        }
     });
 
     rt.block_on(async {

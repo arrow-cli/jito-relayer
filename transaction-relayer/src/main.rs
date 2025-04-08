@@ -51,7 +51,7 @@ use tikv_jemallocator::Jemalloc;
 use tokio::{runtime::Builder, signal, sync::mpsc::channel};
 use tokio::net::UdpSocket;
 use tonic::transport::Server;
-
+use hook::GrpcServer;
 // no-op change to test ci
 
 #[global_allocator]
@@ -79,7 +79,10 @@ struct Args {
     tpu_quic_port: u16,
 
     #[arg(long, env)]
-    hook_udp_relay_target: SocketAddr,
+    hook_bind_addr: SocketAddr,
+
+    #[arg(long, env)]
+    hook_auth_code: String,
 
     /// Number of tpu quic servers to spawn.
     #[arg(long, env, default_value_t = 1)]
@@ -584,9 +587,10 @@ fn main() {
     });
 
     // hook broadcast task
-    rt.spawn(async move {
-        let hook_socket = UdpSocket::bind("0.0.0.0:0").await.expect("no empty ports left on localhost");
+    let (broadcaster, _) = tokio::sync::broadcast::channel(u16::MAX as usize);
 
+    let broadcaster_clone = broadcaster.clone();
+    rt.spawn(async move {
         while let Some(banking_packet_batch) = hook_packet_receiver.recv().await {
             let batches = banking_packet_batch.0.clone();
 
@@ -594,12 +598,21 @@ fn main() {
                 for packet in batch.iter() {
                     if let Some(serialized_tx) = packet.data(..) {
                         // versioned transaction ready to send
-                        hook_socket.send_to(&serialized_tx, &args.hook_udp_relay_target).await.expect("error sending packet to hook");
+                        broadcaster_clone.send(serialized_tx.to_vec()).unwrap();
                     }
                 }
             }
         }
     });
+
+    // create grpc server
+    let svc = GrpcServer::new(args.hook_auth_code, broadcaster).to_service();
+
+    rt.spawn(async move {
+        Server::builder().add_service(svc).serve(args.hook_bind_addr).await.expect("hook grpc service failed");
+    });
+
+    info!("gRPC server started on {}", args.hook_bind_addr);
 
     rt.block_on(async {
         let auth_svc = AuthServiceImpl::new(

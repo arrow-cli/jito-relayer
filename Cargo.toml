@@ -1,15 +1,18 @@
 [workspace]
 members = [
     "block_engine",
-    "core",
+    "core", "hook",
     "jito-protos",
-    #    "packet_blaster", // TODO (LB): fix
+    # "packet_blaster",
     "relayer",
     "rpc",
     "transaction-relayer",
     "web"
 ]
+exclude = ["packet_blaster"]
+
 resolver = "1"
+
 
 [workspace.package]
 version = "0.3.1"
@@ -41,6 +44,7 @@ jito-protos = { path = "jito-protos", version = "=0.3.1" }
 jito-relayer = { path = "relayer", version = "=0.3.1" }
 jito-relayer-web = { path = "web", version = "=0.3.1" }
 jito-rpc = { path = "rpc", version = "=0.3.1" }
+hook = { path = "hook" }
 jwt = { version = "0.16.0", features = ["openssl"] }
 keyed_priority_queue = "0.4.1"
 lazy_static = "1.4.0"
@@ -78,6 +82,10 @@ tokio-stream = "0.1.12"
 tonic = { version = "0.10.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }
 tonic-build = "0.10.2"
 tower = { version = "0.4.1", features = ["limit"] }
+
+# hook
+mev-relayer-protos = { git = "https://github.com/fuzzbuck/mprotos", rev = "3adbeb54c42ce6e21a8fa25eed5b27fe71c79043" }
+
 
 [profile.release]
 # thin has minimal overhead vs none (default): https://blog.llvm.org/2016/06/thinlto-scalable-and-incremental-lto.html

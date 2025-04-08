@@ -2558,6 +2558,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hook"
+version = "0.3.1"
+dependencies = [
+ "mev-relayer-protos",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.10.2",
+]
+
+[[package]]
 name = "hostname"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3108,6 +3118,7 @@ dependencies = [
  "crossbeam-channel",
  "dashmap",
  "env_logger",
+ "hook",
  "hostname",
  "itertools 0.10.5",
  "jito-block-engine",
@@ -3629,6 +3640,18 @@ dependencies = [
  "keccak",
  "rand_core 0.6.4",
  "zeroize",
+]
+
+[[package]]
+name = "mev-relayer-protos"
+version = "0.2.0"
+source = "git+https://github.com/fuzzbuck/mprotos?rev=3adbeb54c42ce6e21a8fa25eed5b27fe71c79043#3adbeb54c42ce6e21a8fa25eed5b27fe71c79043"
+dependencies = [
+ "prost 0.12.6",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.10.2",
+ "tonic-build 0.10.2",
 ]
 
 [[package]]

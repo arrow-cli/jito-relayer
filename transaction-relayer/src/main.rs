@@ -598,7 +598,7 @@ fn main() {
                 for packet in batch.iter() {
                     if let Some(serialized_tx) = packet.data(..) {
                         // versioned transaction ready to send
-                        broadcaster_clone.send(serialized_tx.to_vec()).unwrap();
+                        let _ = broadcaster_clone.send(serialized_tx.to_vec());
                     }
                 }
             }

@@ -12,12 +12,18 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use jito_block_engine::block_engine::BlockEnginePackets;
 use jito_relayer::relayer::RelayerPacketBatches;
 use agave_banking_stage_ingress_types::BankingPacketBatch;
+use log::warn;
+use mev_relayer_protos::hook_proto::DropTransactionRequest;
 use solana_metrics::datapoint_info;
+use solana_perf::packet::PacketBatch;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio_stream::iter;
+use hook::MevGrpcClient;
 
 pub const BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY: usize = 5_000;
+
 
 /// Forwards packets to the Block Engine handler thread.
 /// Delays transactions for packet_delay_ms before forwarding them to the validator.
@@ -29,18 +35,20 @@ pub fn start_forward_and_delay_thread(
     num_threads: u64,
     disable_mempool: bool,
     exit: &Arc<AtomicBool>,
-    hook_packet_sender: tokio::sync::mpsc::Sender<BankingPacketBatch>
+    tx_drop_svc: MevGrpcClient,
+    tx_drop_timeout: Duration
 ) -> Vec<JoinHandle<()>> {
     const SLEEP_DURATION: Duration = Duration::from_millis(5);
     let packet_delay = Duration::from_millis(packet_delay_ms as u64);
 
 
+    let tx_drop_svc = Arc::new(tx_drop_svc);
     (0..num_threads)
         .map(|thread_id| {
             let verified_receiver = verified_receiver.clone();
             let delay_packet_sender = delay_packet_sender.clone();
             let block_engine_sender = block_engine_sender.clone();
-            let hook_tx_sender = hook_packet_sender.clone();
+            let tx_drop_svc = tx_drop_svc.clone();
 
             let exit = exit.clone();
             Builder::new()
@@ -81,6 +89,7 @@ pub fn start_forward_and_delay_thread(
                                 forwarder_metrics.num_packets_received += num_packets;
                                 
                                 // send with hook here
+                                /*
                                 match hook_tx_sender.try_send(banking_packet_batch.clone()) {
                                     Ok(_) => {
                                         forwarder_metrics.num_hook_packets_forwarded += num_packets;
@@ -96,6 +105,7 @@ pub fn start_forward_and_delay_thread(
                                         forwarder_metrics.num_hook_sender_full += 1;
                                     }
                                 }
+                                 */
 
                                 // try_send because the block engine receiver only drains when it's connected
                                 // and we don't want to OOM on packet_receiver
@@ -136,7 +146,7 @@ pub fn start_forward_and_delay_thread(
                             if packet_batches.stamp.elapsed() < packet_delay {
                                 break;
                             }
-                            let batch = buffered_packet_batches.pop_front().unwrap();
+                            let mut batch = buffered_packet_batches.pop_front().unwrap();
 
                             let num_packets = batch
                                 .banking_packet_batch
@@ -145,9 +155,75 @@ pub fn start_forward_and_delay_thread(
                                 .sum::<u64>();
 
                             forwarder_metrics.num_relayer_packets_forwarded += num_packets;
-                            delay_packet_sender
-                                .send(batch)
-                                .expect("exiting forwarding delayed packets");
+
+                            // test if should drop here
+                            let delay_packet_sender_clone = delay_packet_sender.clone();
+                            let tx_drop_svc = tx_drop_svc.clone();
+                            
+                            tokio::spawn(async move {
+                                
+                                let mut join_set = tokio::task::JoinSet::new();
+                                
+                                for (batch_idx, batch) in batch.banking_packet_batch.iter().enumerate() {
+                                    for (packet_idx, packet) in batch.iter().enumerate() {
+                                        if let Some(serialized_tx) = packet.data(..) {
+                                            let request = DropTransactionRequest {
+                                                serialized_versioned_transaction: serialized_tx.to_vec()
+                                            };
+
+                                            let tx_drop_svc = tx_drop_svc.clone();
+                                            join_set.spawn(async move {
+                                                ((batch_idx, packet_idx), match tx_drop_svc.request_drop_tx_response(request, tx_drop_timeout).await.unwrap() {
+                                                    Ok(Ok(resp)) => resp.into_inner().should_drop,
+                                                    Ok(Err(e)) => {
+                                                        warn!("failed sending drop tx request: {:?}", e);
+                                                        false
+                                                    },
+                                                    Err(e) => {
+                                                        warn!("tx drop service request timeout: {:?}", e);
+                                                        false
+                                                    }
+                                                })
+                                            });
+                                        }
+                                    }
+                                }
+                                
+                                // await all the drop tasks to finish
+                                let mut drop_indices = vec![];
+                                while let Some(result) = join_set.join_next().await {
+                                    match result {
+                                        Ok(((batch_idx, packet_idx), should_drop)) => {
+                                            drop_indices.push((batch_idx, packet_idx, should_drop));
+                                        }
+                                        Err(e) => {
+                                            warn!("error processing drop tx request: {:?}.", e);
+                                        }
+                                    }
+                                }
+                                
+                                // craft a new BankingPacketBatch without the dropped transactions
+                                if !drop_indices.is_empty() {
+                                    let mut new_banking_packet_batch = vec![];
+                                    for (batch_idx, packet_idx, should_drop) in drop_indices {
+                                        if !should_drop {
+                                            if let Some(packet) = batch
+                                                .banking_packet_batch[batch_idx]
+                                                .iter()
+                                                .nth(packet_idx)
+                                            {
+                                                new_banking_packet_batch.push(PacketBatch::new(vec![packet.clone()]))
+                                            }
+                                        }
+                                    }
+                                    batch.banking_packet_batch = Arc::new(new_banking_packet_batch);
+                                }
+                                
+                                // finally, send over the modified batch
+                                delay_packet_sender_clone
+                                    .send(batch)
+                                    .expect("exiting forwarding delayed packets");
+                            });
                         }
 
                         forwarder_metrics.update_queue_lengths(

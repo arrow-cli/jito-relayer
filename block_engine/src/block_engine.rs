@@ -42,6 +42,7 @@ use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
     time::{interval, sleep},
 };
+use tokio::runtime::Handle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     codegen::InterceptedService,
@@ -121,8 +122,8 @@ impl BlockEngineRelayerHandler {
             Builder::new()
                 .name("block_engine_relayer_handler_thread".into())
                 .spawn(move || {
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(async move {
+                    let rt = Handle::current();
+                    rt.spawn(async move {
                         while !exit.load(Ordering::Relaxed) {
                             let result = Self::auth_and_connect(
                                 &config.block_engine_url,

@@ -12,3 +12,5 @@ mev-relayer-protos = { workspace = true }
 tonic ={ workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+log = "0.4.27"
+rand = "0.8.5"

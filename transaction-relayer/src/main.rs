@@ -40,6 +40,7 @@ use jito_rpc::load_balancer::LoadBalancer;
 use jito_transaction_relayer::forwarder::start_forward_and_delay_thread;
 use jwt::{AlgorithmType, PKeyWithDigest};
 use log::{debug, error, info, warn};
+use mev_relayer_protos::hook_proto::{DropTransactionRequest, DropTransactionResponse};
 use openssl::{hash::MessageDigest, pkey::PKey};
 use solana_metrics::{datapoint_error, datapoint_info};
 use solana_net_utils::multi_bind_in_range_with_config;
@@ -52,7 +53,7 @@ use tikv_jemallocator::Jemalloc;
 use tokio::{runtime::Builder, signal, sync::mpsc::channel};
 use tokio::net::UdpSocket;
 use tonic::transport::Server;
-use hook::GrpcServer;
+use hook::{HookServerStage, MevGrpcClient};
 // no-op change to test ci
 
 #[global_allocator]
@@ -80,10 +81,10 @@ struct Args {
     tpu_quic_port: u16,
 
     #[arg(long, env)]
-    hook_bind_addr: SocketAddr,
+    mev_server_url: String,
 
     #[arg(long, env)]
-    hook_auth_code: String,
+    drop_tx_svc_timeout_ms: u64,
 
     /// Number of tpu quic servers to spawn.
     #[arg(long, env, default_value_t = 1)]
@@ -324,6 +325,7 @@ fn get_sockets(args: &Args) -> Sockets {
     }
 }
 
+
 fn main() {
     const MAX_BUFFERED_REQUESTS: usize = 10;
     const REQUESTS_PER_SECOND: u64 = 5;
@@ -497,20 +499,6 @@ fn main() {
     let (block_engine_sender, block_engine_receiver) =
         channel(jito_transaction_relayer::forwarder::BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY);
 
-    let (hook_packet_sender, mut hook_packet_receiver) =
-        channel(jito_transaction_relayer::forwarder::BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY);
-
-    let forward_and_delay_threads = start_forward_and_delay_thread(
-        verified_receiver,
-        delay_packet_sender,
-        args.packet_delay_ms,
-        block_engine_sender,
-        1,
-        args.disable_mempool,
-        &exit,
-        hook_packet_sender
-    );
-
     let is_connected_to_block_engine = Arc::new(AtomicBool::new(false));
     let block_engine_config = if !args.disable_mempool && args.block_engine_url.is_some() {
         let block_engine_url = args.block_engine_url.unwrap();
@@ -608,35 +596,27 @@ fn main() {
         )
     });
 
-    // hook broadcast task
-    let (broadcaster, _) = tokio::sync::broadcast::channel(u16::MAX as usize);
-
-    let broadcaster_clone = broadcaster.clone();
-    rt.spawn(async move {
-        while let Some(banking_packet_batch) = hook_packet_receiver.recv().await {
-            let batches = banking_packet_batch.0.clone();
-
-            for batch in batches {
-                for packet in batch.iter() {
-                    if let Some(serialized_tx) = packet.data(..) {
-                        // versioned transaction ready to send
-                        let _ = broadcaster_clone.send(serialized_tx.to_vec());
-                    }
-                }
-            }
-        }
-    });
-
-    // create grpc server
-    let svc = GrpcServer::new(args.hook_auth_code, broadcaster).to_service();
-
-    rt.spawn(async move {
-        Server::builder().add_service(svc).serve(args.hook_bind_addr).await.expect("hook grpc service failed");
-    });
-
-    info!("gRPC server started on {}", args.hook_bind_addr);
-
+    let mut forward_and_delay_threads = vec![];
     rt.block_on(async {
+        // create mev drop transaction service
+        let drop_tx_svc = MevGrpcClient::connect(args.mev_server_url.clone()).await.expect("Failed to connect to MEV hook server");
+
+        info!("drop_tx_svc created for {} with drop_tx timeout of {}ms", args.mev_server_url, args.drop_tx_svc_timeout_ms);
+
+        forward_and_delay_threads = start_forward_and_delay_thread(
+            verified_receiver,
+            delay_packet_sender,
+            args.packet_delay_ms,
+            block_engine_sender,
+            1,
+            args.disable_mempool,
+            &exit,
+            drop_tx_svc,
+            Duration::from_millis(args.drop_tx_svc_timeout_ms)
+        );
+
+        info!("forward and delay threads created");
+        
         let auth_svc = AuthServiceImpl::new(
             ValidatorAutherImpl {
                 store: validator_store,

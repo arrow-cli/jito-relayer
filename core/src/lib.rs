@@ -24,7 +24,7 @@ pub fn graceful_panic(callback: Option<fn(&PanicHookInfo)>) -> Arc<AtomicBool> {
     {
         let exit = exit.clone();
         panic::set_hook(Box::new(move |panic_info| {
-            error!("process panicked: {}", panic_info);
+            error!("process panicked: {:?}", panic_info);
             if let Some(f) = callback {
                 f(panic_info);
             }

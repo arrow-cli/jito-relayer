@@ -43,3 +43,4 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 hook = { workspace = true }
+mev-relayer-protos = { workspace = true }

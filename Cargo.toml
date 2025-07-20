@@ -85,7 +85,7 @@ tonic-build = "0.10.2"
 tower = { version = "0.4.1", features = ["limit"] }
 
 # hook
-mev-relayer-protos = { git = "https://github.com/fuzzbuck/mprotos", rev = "3adbeb54c42ce6e21a8fa25eed5b27fe71c79043" }
+mev-relayer-protos = { git = "https://github.com/fuzzbuck/mprotos", rev = "5749578f51ca05308990aafcc5c66e653d7818a6" }
 
 
 [profile.release]

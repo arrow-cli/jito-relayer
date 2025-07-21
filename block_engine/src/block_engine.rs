@@ -122,7 +122,7 @@ impl BlockEngineRelayerHandler {
             Builder::new()
                 .name("block_engine_relayer_handler_thread".into())
                 .spawn(move || {
-                    let rt = Handle::current();
+                    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
                     rt.spawn(async move {
                         while !exit.load(Ordering::Relaxed) {
                             let result = Self::auth_and_connect(

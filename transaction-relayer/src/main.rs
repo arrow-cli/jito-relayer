@@ -613,7 +613,7 @@ fn main() {
             &exit,
             drop_tx_svc,
             Duration::from_millis(args.drop_tx_svc_timeout_ms)
-        );
+        ).await;
 
         info!("forward and delay threads created");
         

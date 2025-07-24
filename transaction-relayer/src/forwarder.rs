@@ -17,6 +17,7 @@ use mev_relayer_protos::hook_proto::DropTransactionRequest;
 use solana_metrics::datapoint_info;
 use solana_perf::packet::PacketBatch;
 use tokio::net::UdpSocket;
+use tokio::runtime::Runtime;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::iter;
@@ -27,7 +28,7 @@ pub const BLOCK_ENGINE_FORWARDER_QUEUE_CAPACITY: usize = 5_000;
 
 /// Forwards packets to the Block Engine handler thread.
 /// Delays transactions for packet_delay_ms before forwarding them to the validator.
-pub fn start_forward_and_delay_thread(
+pub async fn start_forward_and_delay_thread(
     verified_receiver: Receiver<BankingPacketBatch>,
     delay_packet_sender: Sender<RelayerPacketBatches>,
     packet_delay_ms: u32,
@@ -54,6 +55,8 @@ pub fn start_forward_and_delay_thread(
             Builder::new()
                 .name(format!("forwarder_thread_{thread_id}"))
                 .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                    
                     let mut buffered_packet_batches: VecDeque<RelayerPacketBatches> =
                         VecDeque::with_capacity(100_000);
 
@@ -159,8 +162,8 @@ pub fn start_forward_and_delay_thread(
                             // test if should drop here
                             let delay_packet_sender_clone = delay_packet_sender.clone();
                             let tx_drop_svc = tx_drop_svc.clone();
-                            
-                            tokio::spawn(async move {
+
+                            rt.spawn(async move {
                                 
                                 let mut join_set = tokio::task::JoinSet::new();
                                 
